@@ -44,6 +44,29 @@ AGENT_NAME = "JustAsAwesomeAgent"
 
 
 # ===== YOUR CODE HERE =====
+from pokerbot.bot import make_bot
+from pokerbot.safety import safe_choose, safe_call
+
+
+# The bot holds strategy settings. All per-half tracking stays in memory.
+BOT = make_bot()
+
+
+def new_half(config: AgentConfig, memory: dict) -> None:
+    # Initialize tracking for a fresh half.
+    safe_call(BOT.new_half, config, memory)
+
+
+def choose_action(obs: Observation, memory: dict) -> Action:
+    # Run the strategy and replace exceptions or illegal actions
+    # with the safety wrapper's legal fallback.
+    return safe_choose(BOT.choose_action, obs, memory)
+
+
+def on_hand_end(result: HandResult, memory: dict) -> None:
+    # Update completed-hand statistics without letting an exception
+    # escape to the judge.
+    safe_call(BOT.on_hand_end, result, memory)
 
 def new_half(config: AgentConfig, memory: dict) -> None:
     """Called at the start of each half-match (1000 hands).
