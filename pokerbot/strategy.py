@@ -77,7 +77,8 @@ def decide(obs, memory, params=None):
     pot_odds = obs.to_call / (obs.pot + obs.to_call) if obs.to_call else 0.0
 
     # Only integer values are hashed, keeping decisions reproducible across runs.
-    seed = hash((obs.hand_index, int(obs.street), len(obs.action_history)))
+    # NumPy requires a non-negative seed; limit the deterministic hash to 32 bits.
+    seed = hash((obs.hand_index, int(obs.street), len(obs.action_history))) & 0xFFFFFFFF
     rng = random.Random(seed)
 
     if obs.street == Street.PREFLOP:
