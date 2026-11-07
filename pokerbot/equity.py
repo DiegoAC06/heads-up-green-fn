@@ -4,6 +4,7 @@ equity() is the public entry point. equityRef() is the pure python reference,
 kept as the fallback and as the yardstick for faster versions.
 """
 
+import math
 import random
 import time
 from itertools import combinations, combinations_with_replacement
@@ -89,6 +90,7 @@ def _buildTables():
 
 
 if HAVE_NUMPY:
+  from pokerbot.preflop import PREFLOP_PCT, TABLE_LOADED, colexIndexBatch
   NON_FLUSH, FLUSH_TABLE, IS_FLUSH, RANK_KEY, SUIT_KEY = _buildTables()
   PAIR_A = np.array([p[0] for p in PAIRS])
   PAIR_B = np.array([p[1] for p in PAIRS])
@@ -124,8 +126,21 @@ def omahaScoreBatch(holes, boards):
   return _bestScores(pairRk, pairSk, triRk, triSk)
 
 
+def _drawRows(rng, deck, size: int, need: int, missing: int, oppMinPct: float):
+  """size rows of `need` cards; opponent hands (columns missing:) filtered by preflop pct."""
+  if oppMinPct <= 0.0 or not TABLE_LOADED:
+    return deck[rng.random((size, len(deck))).argsort(axis=1)[:, :need]]
+  # oversample, keep rows whose opponent hand is in range, top up with the rest
+  draws = min(math.ceil(size / max(1.0 - oppMinPct, 0.25)), 4 * size)
+  rows = deck[rng.random((draws, len(deck))).argsort(axis=1)[:, :need]]
+  inRange = PREFLOP_PCT[colexIndexBatch(rows[:, missing:])] >= oppMinPct
+  order = np.argsort(~inRange, kind="stable")
+  return rows[order[:size]]
+
+
 def equityFast(hole: Sequence[int], board: Sequence[int], trials: int = 300,
-               deadline: Optional[float] = None, seed: Optional[int] = None) -> float:
+               deadline: Optional[float] = None, oppMinPct: float = 0.0,
+               seed: Optional[int] = None) -> float:
   rng = np.random.default_rng(seed)
   used = set(hole) | set(board)
   deck = np.array([c for c in range(NUM_CARDS) if c not in used], dtype=np.int64)
@@ -140,7 +155,7 @@ def equityFast(hole: Sequence[int], board: Sequence[int], trials: int = 300,
       break
     size = min(BATCH, trials - done)
     # first `need` columns of a random permutation per row = a draw without replacement
-    drawn = deck[rng.random((size, len(deck))).argsort(axis=1)[:, :need]]
+    drawn = _drawRows(rng, deck, size, need, missing, oppMinPct)
     fullBoard = np.concatenate([np.broadcast_to(boardArr, (size, len(boardArr))), drawn[:, :missing]], axis=1)
     triRk, triSk = _tripleKeys(fullBoard)
     mine = _bestScores(myRk, mySk, triRk, triSk)
@@ -154,7 +169,8 @@ def equityFast(hole: Sequence[int], board: Sequence[int], trials: int = 300,
 def equity(hole: Sequence[int], board: Sequence[int], trials: int = 300,
            deadline: Optional[float] = None, oppMinPct: float = 0.0,
            seed: Optional[int] = None) -> float:
-  """Contract entry point. oppMinPct is accepted but ignored until task 5."""
+  """Contract entry point. oppMinPct in 0..1 restricts the opponent to hands at
+  or above that preflop percentile (numpy path only)."""
   if HAVE_NUMPY:
-    return equityFast(hole, board, trials=trials, deadline=deadline, seed=seed)
+    return equityFast(hole, board, trials=trials, deadline=deadline, oppMinPct=oppMinPct, seed=seed)
   return equityRef(hole, board, trials=trials, deadline=deadline, seed=seed)
