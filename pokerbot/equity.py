@@ -59,6 +59,7 @@ except ImportError:
   HAVE_NUMPY = False
 
 BATCH = 64
+RANGE_ROUNDS = 2  # draw rounds per batch when filtering by opponent range
 PAIRS = tuple(combinations(range(5), 2))
 TRIPLES = tuple(combinations(range(5), 3))
 
@@ -130,12 +131,22 @@ def _drawRows(rng, deck, size: int, need: int, missing: int, oppMinPct: float):
   """size rows of `need` cards; opponent hands (columns missing:) filtered by preflop pct."""
   if oppMinPct <= 0.0 or not TABLE_LOADED:
     return deck[rng.random((size, len(deck))).argsort(axis=1)[:, :need]]
-  # oversample, keep rows whose opponent hand is in range, top up with the rest
-  draws = min(math.ceil(size / max(1.0 - oppMinPct, 0.25)), 4 * size)
-  rows = deck[rng.random((draws, len(deck))).argsort(axis=1)[:, :need]]
-  inRange = PREFLOP_PCT[colexIndexBatch(rows[:, missing:])] >= oppMinPct
-  order = np.argsort(~inRange, kind="stable")
-  return rows[order[:size]]
+  # oversample with a 1.5x margin (blockers shrink the in-range share), up to two
+  # rounds; if still short, top up with out-of-range rows so a batch never starves
+  draws = min(math.ceil(1.5 * size / max(1.0 - oppMinPct, 0.25)), 4 * size)
+  kept = []
+  rest = None
+  have = 0
+  for _ in range(RANGE_ROUNDS):
+    rows = deck[rng.random((draws, len(deck))).argsort(axis=1)[:, :need]]
+    inRange = PREFLOP_PCT[colexIndexBatch(rows[:, missing:])] >= oppMinPct
+    kept.append(rows[inRange])
+    have += int(inRange.sum())
+    if rest is None:
+      rest = rows[~inRange]
+    if have >= size:
+      break
+  return np.concatenate(kept + [rest])[:size]
 
 
 def equityFast(hole: Sequence[int], board: Sequence[int], trials: int = 300,
