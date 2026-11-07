@@ -1,3 +1,6 @@
+import os
+import subprocess
+import sys
 import time
 
 from evaluator import cards_from_str
@@ -58,3 +61,20 @@ def testTimebankBudgetHitsZeroWhenSpent():
   tb = TimeBank(totalS=1.0, reserveS=1.0)
   tb.begin()
   assert tb.deadline(handIndex=0) <= time.perf_counter()
+
+
+def testWarmupIsFast():
+  import pokerbot
+  t = time.perf_counter()
+  pokerbot.warmup()
+  assert time.perf_counter() - t < 3.0
+
+
+def testWarmupMakesFirstDecisionCheap():
+  # a fresh process pays table building in warmup, not in the first equity call
+  code = ("import time, pokerbot; pokerbot.warmup(); from pokerbot.equity import equity; "
+          "t = time.perf_counter(); equity([0, 5, 10, 15, 20], [1, 6, 11], trials=300); "
+          "print(time.perf_counter() - t)")
+  root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+  out = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True)
+  assert float(out.stdout.strip()) < 0.05, out.stderr
