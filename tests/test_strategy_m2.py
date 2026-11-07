@@ -31,24 +31,31 @@ def test_classifier_labels():
 def test_adjust_preserves_base_settings():
     original = DEFAULT_PARAMS.copy()
 
+    # Unknown and solid opponents keep M1 settings.
     assert adjust(original, "unknown") == original
     assert adjust(original, "solid") == original
-    assert adjust(original, "station")["bluff_freq"] == 0.0
 
-    # Maniacs now retain M1 settings.
+    # Calling stations receive value-betting adjustments.
+    station = adjust(original, "station")
+    assert station["bluff_freq"] == 0.0
+    assert station["bet_eq"] == 0.55
+    assert station["raise_half_eq"] == 0.57
+    assert station["range_step"] == 0.0
+
+    # Other opponent types now retain M1 settings.
     assert adjust(original, "maniac") == original
+    assert adjust(original, "random") == original
+    assert adjust(original, "nit") == original
 
-    assert adjust(original, "random")["range_step"] == 0.03
-    assert adjust(original, "nit")["bluff_freq"] == 0.30
-
+    # Adjustments must not modify the original parameters.
     assert original == DEFAULT_PARAMS
-    assert adjust(original, "station") is not original
+    assert station is not original
 
 
 def test_observer_counts_each_opponent_action_once():
     game = Game(make_deal("observe", 0), button_seat=1)
 
-    # Opponent is on the button and acts first.
+    # Opponent acts first and calls the big blind.
     game.apply(Action.CHECK_CALL)
     obs = game.observation(0)
 
@@ -86,7 +93,8 @@ def test_unrevealed_opponent_fold_counts_once():
 
 
 def test_bot_uses_label_and_resets_each_half():
-    bot = make_bot()
+    # Explicitly enable M2 regardless of environment settings.
+    bot = make_bot(detect_opponents=True)
     memory = {}
 
     bot.new_half(AgentConfig(), memory)
