@@ -41,6 +41,10 @@ def main() -> None:
     times = sorted(benchStreet(size, rng))
     p95 = times[int(len(times) * 0.95) - 1]
     print(f"{name:<10}{statistics.median(times):>12.2f}{p95:>10.2f}")
+  # opponent range filtering costs extra draws; target flop median <= 3 ms
+  times = sorted(benchStreet(3, rng, oppMinPct=0.6))
+  p95 = times[int(len(times) * 0.95) - 1]
+  print(f"{'flop@0.6':<10}{statistics.median(times):>12.2f}{p95:>10.2f}")
 
 
 if __name__ == "__main__":
