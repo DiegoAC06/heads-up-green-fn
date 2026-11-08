@@ -16,6 +16,9 @@ PRIOR_PAF_WEIGHT = 20
 # Per-street rates shrink toward the overall postflop rate with this weight.
 STREET_PAF_WEIGHT = 15
 POSTFLOP_STREETS = (Street.FLOP, Street.TURN, Street.RIVER)
+# Fold-to-bet per street, shrunk toward their overall fold-to-bet.
+PRIOR_FOLD = 0.35
+STREET_FOLD_WEIGHT = 15
 
 
 class OppModel:
@@ -30,6 +33,8 @@ class OppModel:
         self.postRaises = 0
         self.streetDecisions = {st: 0 for st in POSTFLOP_STREETS}
         self.streetRaises = {st: 0 for st in POSTFLOP_STREETS}
+        self.streetFaced = {st: 0 for st in POSTFLOP_STREETS}
+        self.streetFolds = {st: 0 for st in POSTFLOP_STREETS}
         self.decisions = 0
         self.raises = 0
         self.calls = 0
@@ -65,6 +70,12 @@ class OppModel:
         return ((self.streetRaises.get(street, 0) + overall * STREET_PAF_WEIGHT)
                 / (self.streetDecisions.get(street, 0) + STREET_PAF_WEIGHT))
 
+    def foldToBetOn(self, street):
+        """Fold-to-bet on one postflop street, shrunk toward the overall rate."""
+        overall = self.folds / self.faced if self.faced else PRIOR_FOLD
+        return ((self.streetFolds.get(street, 0) + overall * STREET_FOLD_WEIGHT)
+                / (self.streetFaced.get(street, 0) + STREET_FOLD_WEIGHT))
+
     @property
     def fold_to_bet(self):
         return self.folds / self.faced if self.faced else 0.0
@@ -97,6 +108,8 @@ class OppModel:
                 self.decisions += 1
                 if my_bet > opp_bet:
                     self.faced += 1
+                    if entry.street != Street.PREFLOP:
+                        self.streetFaced[entry.street] += 1
                 if entry.action in (Action.RAISE_HALF, Action.RAISE_POT):
                     self.raises += 1
                 elif entry.action == Action.CHECK_CALL and my_bet > opp_bet:
@@ -145,6 +158,8 @@ class OppModel:
                 self.postDecisions += 1
                 last = {3: Street.FLOP, 4: Street.TURN, 5: Street.RIVER}[min(len(result.board), 5)]
                 self.streetDecisions[last] += 1
+                self.streetFaced[last] += 1
+                self.streetFolds[last] += 1
 
         self._hand_index = None
         self._seen = 0

@@ -56,6 +56,10 @@ class Bot:
     def on_hand_end(self, result, memory):
         # An opponent fold can end a hand before their action is observed.
         memory["opp"].hand_end(result)
+        # They folded preflop right after our preflop raise.
+        if (not result.went_to_showdown and result.my_net > 0 and not result.board
+                and memory.get("pfLast") == (result.hand_index, True)):
+            memory["ourPfRaiseFolds"] = memory.get("ourPfRaiseFolds", 0) + 1
         memory["hands_played"] += 1
         memory["net_chips"] += result.my_net
 

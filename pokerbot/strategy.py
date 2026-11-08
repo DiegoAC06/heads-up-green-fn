@@ -44,7 +44,30 @@ DEFAULT_PARAMS = {
     "post_range": True,
     "post_widen": 2.0,
     "post_floor": 0.10,
+    # Fold-equity bluffing: when checked to with a weak hand, bluff half pot with
+    # probability fe_k * (their fold-to-bet on this street - 1/3), capped at 0.6;
+    # 1/3 is the break-even fold rate of a half-pot bet. fe_oop allows it out of position.
+    "fe_bluff": True,
+    "fe_k": 1.5,
+    "fe_oop": False,
+    # Button opens and steals: raise unopened button hands at or above
+    # btn_open_pct; vs opponents who fold to our preflop raises at least
+    # steal_fold_min of the time, also raise anything at or above steal_pct.
+    "btn_open_pct": 0.65,
+    "steal_fold_min": 0.5,
+    "steal_pct": 0.30,
+    # Adaptive sampling: a pilot run, plus extra samples only when the pilot
+    # equity is within close_band of a decision threshold.
+    "adaptive_trials": True,
+    "pilot_trials": 120,
+    "extra_trials": 600,
+    "close_band": 0.06,
 }
+
+PRIOR_PF_FOLD = 0.35
+PRIOR_PF_FOLD_WEIGHT = 15
+FE_BREAK_EVEN = 1.0 / 3.0
+FE_MAX = 0.6
 
 
 def raiser_min_pct(memory, params):
@@ -100,6 +123,28 @@ def post_top_frac(obs, memory, params):
     return max(params.get("post_floor", 0.10), frac)
 
 
+def nearest_threshold_gap(eq, obs, params):
+    """Distance from eq to the closest equity threshold that decides this spot."""
+    pot_odds = obs.to_call / (obs.pot + obs.to_call) if obs.to_call else 0.0
+    marks = [params["raise_half_eq"], params["raise_pot_eq"]]
+    marks.append(pot_odds + params["call_margin"] if obs.to_call else params["bet_eq"])
+    return min(abs(eq - m) for m in marks)
+
+
+def pf_fold_to_raise(memory):
+    """Smoothed share of our preflop raises that the opponent folded to."""
+    return ((memory.get("ourPfRaiseFolds", 0) + PRIOR_PF_FOLD * PRIOR_PF_FOLD_WEIGHT)
+            / (memory.get("ourPfRaises", 0) + PRIOR_PF_FOLD_WEIGHT))
+
+
+def _record_pf(obs, memory, action):
+    raised = action in (Action.RAISE_HALF, Action.RAISE_POT)
+    memory["pfLast"] = (obs.hand_index, raised)
+    if raised:
+        memory["ourPfRaises"] = memory.get("ourPfRaises", 0) + 1
+    return action
+
+
 def _opp_raised_preflop(obs):
     return any(
         not entry.is_me
@@ -138,14 +183,21 @@ def decide(obs, memory, params=None):
 
         if (strength >= params["pf_reraise_pct"]
                 or (strength >= params["pf_raise_pct"] and not raised)):
-            return legal_action(obs, Action.RAISE_POT, Action.RAISE_HALF, Action.CHECK_CALL)
+            return _record_pf(obs, memory, legal_action(obs, Action.RAISE_POT, Action.RAISE_HALF, Action.CHECK_CALL))
+
+        # Unopened button: open wider, and steal more vs players who fold to raises.
+        if not raised and obs.is_button and (
+                strength >= params.get("btn_open_pct", 1.1)
+                or (pf_fold_to_raise(memory) >= params.get("steal_fold_min", 1.1)
+                    and strength >= params.get("steal_pct", 1.1))):
+            return _record_pf(obs, memory, legal_action(obs, Action.RAISE_POT, Action.RAISE_HALF, Action.CHECK_CALL))
 
         if (strength >= params["pf_call_pct"]
                 or obs.to_call <= 1
                 or (pot_odds <= 0.25 and strength >= params["pf_call_pct"] - 0.10)):
-            return Action.CHECK_CALL
+            return _record_pf(obs, memory, Action.CHECK_CALL)
 
-        return check_or_fold(obs)
+        return _record_pf(obs, memory, check_or_fold(obs))
 
     # Postflop, estimate showdown equity against the opponent's likely range:
     # a preflop-strength floor (raises this hand, inferred raising range) and,
@@ -160,8 +212,18 @@ def decide(obs, memory, params=None):
     deadline = tb.deadline(obs.hand_index) if tb is not None else time.perf_counter() + 0.001
 
     # Contract: equity(hole, board, trials, deadline, oppMinPct, seed, oppTopFrac=...).
-    eq = equity(obs.hole_cards, obs.board, 300, deadline, opp_min_pct, seed,
-                oppTopFrac=post_top_frac(obs, memory, params))
+    top_frac = post_top_frac(obs, memory, params)
+    if params.get("adaptive_trials"):
+        pilot = params.get("pilot_trials", 120)
+        eq = equity(obs.hole_cards, obs.board, pilot, deadline, opp_min_pct, seed, oppTopFrac=top_frac)
+        if (nearest_threshold_gap(eq, obs, params) < params.get("close_band", 0.04)
+                and time.perf_counter() < deadline):
+            extra = params.get("extra_trials", 600)
+            eq2 = equity(obs.hole_cards, obs.board, extra, deadline, opp_min_pct,
+                         (seed + 1) & 0xFFFFFFFF, oppTopFrac=top_frac)
+            eq = (eq * pilot + eq2 * extra) / (pilot + extra)
+    else:
+        eq = equity(obs.hole_cards, obs.board, 300, deadline, opp_min_pct, seed, oppTopFrac=top_frac)
 
     # Strong hands: bet/raise for value. All raises are checked for legality.
     if eq >= params["raise_pot_eq"] and rng.random() >= params["trap_freq"]:
@@ -172,6 +234,14 @@ def decide(obs, memory, params=None):
 
     # A free check cannot be replaced by a fold. Bluff only in position.
     if obs.to_call == 0:
+        model = memory.get("opp")
+        if (params.get("fe_bluff") and eq <= params["bluff_max_eq"]
+                and (obs.is_button or params.get("fe_oop"))
+                and callable(getattr(model, "foldToBetOn", None))):
+            prob = min(FE_MAX, max(0.0, params.get("fe_k", 1.5) * (model.foldToBetOn(obs.street) - FE_BREAK_EVEN)))
+            if rng.random() < prob:
+                return legal_action(obs, Action.RAISE_HALF, Action.CHECK_CALL)
+            return Action.CHECK_CALL
         if (obs.is_button and eq <= params["bluff_max_eq"]
                 and rng.random() < params["bluff_freq"]):
             return legal_action(obs, Action.RAISE_HALF, Action.CHECK_CALL)
