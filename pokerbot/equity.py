@@ -59,6 +59,8 @@ except ImportError:
   HAVE_NUMPY = False
 
 BATCH = 64
+STARVED_TRIALS = 16  # samples used when the time bank signals its hard margin
+STARVED_SIGNAL_S = 1000.0  # TimeBank returns a deadline this far in the past to ask for it
 RANGE_ROUNDS = 2  # draw rounds per batch when filtering by opponent range
 PAIRS = tuple(combinations(range(5), 2))
 TRIPLES = tuple(combinations(range(5), 3))
@@ -161,6 +163,9 @@ def equityFast(hole: Sequence[int], board: Sequence[int], trials: int = 300,
   myRk, mySk = _pairKeys(np.array(list(hole), dtype=np.int64))
   total = 0.0
   done = 0
+  # a nearly empty time bank gets one small batch instead of a full one
+  if deadline is not None and deadline < time.perf_counter() - STARVED_SIGNAL_S:
+    trials = min(trials, STARVED_TRIALS)
   while done < trials:
     if done > 0 and deadline is not None and time.perf_counter() >= deadline:
       break

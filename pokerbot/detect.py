@@ -40,6 +40,18 @@ def adjust(params, label):
             range_step=0.0
         )
 
-    # Maniac, random, nit, solid, and unknown opponents
+    if label == "nit":
+        # Nits fold most hands to a bet and raise only strong ones:
+        # steal more, and call their raises less. (Nightmare Gauntlet, b8/b7.)
+        updated.update(
+            pf_raise_pct=0.40,
+            bluff_freq=0.5,
+            bluff_max_eq=0.5,
+            pf_call_pct=0.75,
+            range_step=0.6,
+            call_margin=0.10,
+        )
+
+    # Maniac, random, solid, and unknown opponents
     # keep the original M1 settings.
     return updated

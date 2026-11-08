@@ -45,7 +45,8 @@ def test_adjust_preserves_base_settings():
     # Other opponent types now retain M1 settings.
     assert adjust(original, "maniac") == original
     assert adjust(original, "random") == original
-    assert adjust(original, "nit") == original
+    # Nits get the gauntlet steal/respect adjustment (tests/test_gauntlet_fixes.py).
+    assert adjust(original, "nit") != original
 
     # Adjustments must not modify the original parameters.
     assert original == DEFAULT_PARAMS

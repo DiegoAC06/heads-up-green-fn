@@ -3,6 +3,8 @@
 import time
 
 OVERHEAD_PER_DECISION_S = 0.0003  # request handling the judge charges but we cannot see
+STARVE_MARGIN_S = 1.0             # this close to the real bank, equity uses a tiny batch
+STARVED_DEADLINE_PAST_S = 1.0e6   # deadline this far in the past is equity's starve signal
 
 
 class TimeBank:
@@ -28,6 +30,8 @@ class TimeBank:
 
   def deadline(self, handIndex: int) -> float:
     """Absolute perf_counter time this decision should finish by."""
+    if self.spent() >= self.totalS - STARVE_MARGIN_S:
+      return self.t0 - STARVED_DEADLINE_PAST_S
     remaining = self.totalS - self.reserveS - self.spent()
     estLeft = max(1.0, (1000 - handIndex) * 2.5)
     budget = min(max(remaining / estLeft, 0.0), self.maxPerDecisionS)
