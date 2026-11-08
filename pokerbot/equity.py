@@ -129,8 +129,43 @@ def omahaScoreBatch(holes, boards):
   return _bestScores(pairRk, pairSk, triRk, triSk)
 
 
-def _drawRows(rng, deck, size: int, need: int, missing: int, oppMinPct: float):
-  """size rows of `need` cards; opponent hands (columns missing:) filtered by preflop pct."""
+def _currentScores(oppHoles, boardArr):
+  """Each opponent hand's best score on the board dealt so far (3+ cards)."""
+  oppRk, oppSk = _pairKeys(oppHoles)
+  # every 3-card subset of the 3, 4 or 5 board cards dealt so far
+  tri = np.array(list(combinations(range(len(boardArr)), 3)))
+  rk, sk = RANK_KEY[boardArr], SUIT_KEY[boardArr]
+  triRk = (rk[tri[:, 0]] + rk[tri[:, 1]] + rk[tri[:, 2]])[None, :]
+  triSk = (sk[tri[:, 0]] + sk[tri[:, 1]] + sk[tri[:, 2]])[None, :]
+  return _bestScores(oppRk, oppSk, triRk, triSk)
+
+
+def _drawStrongRows(rng, deck, size, need, missing, oppMinPct, topFrac, boardArr):
+  """Rows whose opponent hand is in the top `topFrac` of current hand strength
+  (among hands in the preflop range); short batches are filled strongest first."""
+  share = topFrac * (1.0 - oppMinPct if oppMinPct > 0.0 and TABLE_LOADED else 1.0)
+  draws = min(math.ceil(1.5 * size / max(share, 0.25)), 4 * size)
+  rows = deck[rng.random((draws, len(deck))).argsort(axis=1)[:, :need]]
+  opp = rows[:, missing:]
+  inPct = (PREFLOP_PCT[colexIndexBatch(opp)] >= oppMinPct) if (oppMinPct > 0.0 and TABLE_LOADED) \
+    else np.ones(len(rows), dtype=bool)
+  cur = _currentScores(opp, boardArr)
+  pool = cur[inPct] if inPct.any() else cur
+  threshold = np.quantile(pool, 1.0 - topFrac)
+  keep = inPct & (cur >= threshold)
+  # order: kept rows (random order), then the rest strongest first, in-range before out
+  restIdx = np.flatnonzero(~keep)
+  restIdx = restIdx[np.lexsort((-cur[restIdx], ~inPct[restIdx]))]
+  order = np.concatenate([np.flatnonzero(keep), restIdx])
+  return rows[order[:size]]
+
+
+def _drawRows(rng, deck, size: int, need: int, missing: int, oppMinPct: float,
+              topFrac: float = 1.0, boardArr=None):
+  """size rows of `need` cards; opponent hands (columns missing:) filtered by preflop pct
+  and, postflop with topFrac < 1, by current hand strength."""
+  if topFrac < 1.0 and boardArr is not None and len(boardArr) >= 3:
+    return _drawStrongRows(rng, deck, size, need, missing, oppMinPct, topFrac, boardArr)
   if oppMinPct <= 0.0 or not TABLE_LOADED:
     return deck[rng.random((size, len(deck))).argsort(axis=1)[:, :need]]
   # oversample with a 1.5x margin (blockers shrink the in-range share), up to two
@@ -153,7 +188,7 @@ def _drawRows(rng, deck, size: int, need: int, missing: int, oppMinPct: float):
 
 def equityFast(hole: Sequence[int], board: Sequence[int], trials: int = 300,
                deadline: Optional[float] = None, oppMinPct: float = 0.0,
-               seed: Optional[int] = None) -> float:
+               seed: Optional[int] = None, oppTopFrac: float = 1.0) -> float:
   rng = np.random.default_rng(seed)
   used = set(hole) | set(board)
   deck = np.array([c for c in range(NUM_CARDS) if c not in used], dtype=np.int64)
@@ -171,7 +206,7 @@ def equityFast(hole: Sequence[int], board: Sequence[int], trials: int = 300,
       break
     size = min(BATCH, trials - done)
     # first `need` columns of a random permutation per row = a draw without replacement
-    drawn = _drawRows(rng, deck, size, need, missing, oppMinPct)
+    drawn = _drawRows(rng, deck, size, need, missing, oppMinPct, oppTopFrac, boardArr)
     fullBoard = np.concatenate([np.broadcast_to(boardArr, (size, len(boardArr))), drawn[:, :missing]], axis=1)
     triRk, triSk = _tripleKeys(fullBoard)
     mine = _bestScores(myRk, mySk, triRk, triSk)
@@ -184,9 +219,11 @@ def equityFast(hole: Sequence[int], board: Sequence[int], trials: int = 300,
 
 def equity(hole: Sequence[int], board: Sequence[int], trials: int = 300,
            deadline: Optional[float] = None, oppMinPct: float = 0.0,
-           seed: Optional[int] = None) -> float:
+           seed: Optional[int] = None, oppTopFrac: float = 1.0) -> float:
   """Contract entry point. oppMinPct in 0..1 restricts the opponent to hands at
-  or above that preflop percentile (numpy path only)."""
+  or above that preflop percentile; oppTopFrac in (0, 1] keeps only the top share
+  of opponent hands by current strength on the board so far (postflop, numpy path only)."""
   if HAVE_NUMPY:
-    return equityFast(hole, board, trials=trials, deadline=deadline, oppMinPct=oppMinPct, seed=seed)
+    return equityFast(hole, board, trials=trials, deadline=deadline, oppMinPct=oppMinPct, seed=seed,
+                      oppTopFrac=max(0.05, min(1.0, oppTopFrac)))
   return equityRef(hole, board, trials=trials, deadline=deadline, seed=seed)

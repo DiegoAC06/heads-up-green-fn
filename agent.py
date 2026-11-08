@@ -44,8 +44,13 @@ AGENT_NAME = "fn-bot"
 
 
 # ===== YOUR CODE HERE =====
+import pokerbot
 from pokerbot.bot import make_bot
 from pokerbot.safety import safe_choose, safe_call
+
+# Load the equity tables and run one tiny simulation at startup, so the first
+# decision of a half does not pay numpy's first-use cost (about 10 ms).
+pokerbot.warmup()
 
 
 # The bot holds strategy settings. All per-half tracking stays in memory.

@@ -21,12 +21,12 @@ CALLS = 200
 TRIALS = 300
 
 
-def benchStreet(boardSize: int, rng: random.Random, oppMinPct: float = 0.0) -> list:
+def benchStreet(boardSize: int, rng: random.Random, oppMinPct: float = 0.0, oppTopFrac: float = 1.0) -> list:
   times = []
   for i in range(CALLS):
     cards = rng.sample(range(36), 5 + boardSize)
     start = time.perf_counter()
-    equity(cards[:5], cards[5:], trials=TRIALS, seed=i, oppMinPct=oppMinPct)
+    equity(cards[:5], cards[5:], trials=TRIALS, seed=i, oppMinPct=oppMinPct, oppTopFrac=oppTopFrac)
     times.append((time.perf_counter() - start) * 1000)
   return times
 
@@ -45,6 +45,10 @@ def main() -> None:
   times = sorted(benchStreet(3, rng, oppMinPct=0.6))
   p95 = times[int(len(times) * 0.95) - 1]
   print(f"{'flop@0.6':<10}{statistics.median(times):>12.2f}{p95:>10.2f}")
+  # opponent betting-range filter (top 30% of current hands); target flop median <= 3 ms
+  times = sorted(benchStreet(3, rng, oppMinPct=0.6, oppTopFrac=0.3))
+  p95 = times[int(len(times) * 0.95) - 1]
+  print(f"{'flop@top30':<10}{statistics.median(times):>12.2f}{p95:>10.2f}")
 
 
 if __name__ == "__main__":

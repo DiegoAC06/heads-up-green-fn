@@ -7,9 +7,29 @@ is delivered after the fold.
 
 from game import Action, Street
 
+# Preflop raise rate starts at this prior and moves toward observed counts.
+PRIOR_PFR = 0.25
+PRIOR_PFR_WEIGHT = 20
+# Postflop bet/raise rate per postflop decision, same smoothing idea.
+PRIOR_PAF = 0.30
+PRIOR_PAF_WEIGHT = 20
+# Per-street rates shrink toward the overall postflop rate with this weight.
+STREET_PAF_WEIGHT = 15
+POSTFLOP_STREETS = (Street.FLOP, Street.TURN, Street.RIVER)
+
 
 class OppModel:
     def __init__(self):
+        # Hands where the opponent acted preflop, and how many of those they raised.
+        self.pfOpps = 0
+        self.pfRaises = 0
+        self._pfActed = False
+        self._pfRaised = False
+        # Opponent postflop decisions and how many were bets or raises.
+        self.postDecisions = 0
+        self.postRaises = 0
+        self.streetDecisions = {st: 0 for st in POSTFLOP_STREETS}
+        self.streetRaises = {st: 0 for st in POSTFLOP_STREETS}
         self.decisions = 0
         self.raises = 0
         self.calls = 0
@@ -28,6 +48,24 @@ class OppModel:
         return self.calls / self.decisions if self.decisions else 0.0
 
     @property
+    def pfr(self):
+        """Smoothed share of hands in which the opponent raised preflop."""
+        return ((self.pfRaises + PRIOR_PFR * PRIOR_PFR_WEIGHT)
+                / (self.pfOpps + PRIOR_PFR_WEIGHT))
+
+    @property
+    def paf(self):
+        """Smoothed share of postflop decisions that were bets or raises."""
+        return ((self.postRaises + PRIOR_PAF * PRIOR_PAF_WEIGHT)
+                / (self.postDecisions + PRIOR_PAF_WEIGHT))
+
+    def pafOn(self, street):
+        """Bet/raise rate on one postflop street, shrunk toward the overall rate."""
+        overall = self.paf
+        return ((self.streetRaises.get(street, 0) + overall * STREET_PAF_WEIGHT)
+                / (self.streetDecisions.get(street, 0) + STREET_PAF_WEIGHT))
+
+    @property
     def fold_to_bet(self):
         return self.folds / self.faced if self.faced else 0.0
 
@@ -36,6 +74,8 @@ class OppModel:
         if obs.hand_index != self._hand_index:
             self._hand_index = obs.hand_index
             self._seen = 0
+            self._pfActed = False
+            self._pfRaised = False
 
         history = obs.action_history
         if len(history) < self._seen:
@@ -62,6 +102,23 @@ class OppModel:
                 elif entry.action == Action.CHECK_CALL and my_bet > opp_bet:
                     self.calls += 1
 
+                if entry.street != Street.PREFLOP:
+                    self.postDecisions += 1
+                    self.streetDecisions[entry.street] += 1
+                    if entry.action in (Action.RAISE_HALF, Action.RAISE_POT):
+                        self.postRaises += 1
+                        self.streetRaises[entry.street] += 1
+
+                # One preflop opportunity per hand; one raise at most per hand.
+                if entry.street == Street.PREFLOP:
+                    if not self._pfActed:
+                        self._pfActed = True
+                        self.pfOpps += 1
+                    if (entry.action in (Action.RAISE_HALF, Action.RAISE_POT)
+                            and not self._pfRaised):
+                        self._pfRaised = True
+                        self.pfRaises += 1
+
             if entry.is_me:
                 my_bet = entry.street_total
             else:
@@ -80,9 +137,19 @@ class OppModel:
             self.decisions += 1
             self.faced += 1
             self.folds += 1
+            # Folding before any preflop action still used a preflop opportunity.
+            if not self._pfActed:
+                self.pfOpps += 1
+            # A fold with board cards out was a postflop decision.
+            if len(result.board) >= 3:
+                self.postDecisions += 1
+                last = {3: Street.FLOP, 4: Street.TURN, 5: Street.RIVER}[min(len(result.board), 5)]
+                self.streetDecisions[last] += 1
 
         self._hand_index = None
         self._seen = 0
+        self._pfActed = False
+        self._pfRaised = False
 
     def raises_this_hand(self, obs):
         """Count opponent raises in the current hand's public history."""

@@ -33,7 +33,27 @@ DEFAULT_PARAMS = {
     "commit_frac": 0.35,
     "commit_eq": 0.40,
     "trap_freq": 0.0,
+    # Tight-aggressive defense: after a preflop raise, assume postflop that the
+    # opponent holds at least their inferred raising range. Raising a share p
+    # of hands means roughly the top p, i.e. preflop pct >= 1 - p.
+    "pf_range_post": True,
+    "pf_range_slack": 0.0,     # widen the assumed range by this much
+    # Postflop betting range: an opponent who bets or raises a share a of their
+    # postflop decisions is assumed, after k such bets this hand, to hold the
+    # top (a * post_widen) ** k of hands by current strength.
+    "post_range": True,
+    "post_widen": 2.0,
+    "post_floor": 0.10,
 }
+
+
+def raiser_min_pct(memory, params):
+    """Weakest preflop pct the opponent is assumed to raise with."""
+    model = memory.get("opp")
+    pfr = getattr(model, "pfr", None)
+    if pfr is None:
+        return 0.0
+    return max(0.0, min(params["range_cap"], 1.0 - pfr - params.get("pf_range_slack", 0.0)))
 
 
 def legal_action(obs, *choices):
@@ -60,6 +80,32 @@ def opponent_raises(obs, memory):
         1 for entry in obs.action_history
         if (not entry.is_me
             and entry.action in (Action.RAISE_HALF, Action.RAISE_POT))
+    )
+
+
+def post_top_frac(obs, memory, params):
+    """Share of opponent hands (by current strength) consistent with their postflop bets."""
+    if not params.get("post_range"):
+        return 1.0
+    model = memory.get("opp")
+    rate = getattr(model, "pafOn", None)
+    if rate is None:
+        return 1.0
+    # each postflop bet narrows by that street's bet rate (river-only bluffers stay wide)
+    frac = 1.0
+    for entry in obs.action_history:
+        if (not entry.is_me and entry.street != Street.PREFLOP
+                and entry.action in (Action.RAISE_HALF, Action.RAISE_POT)):
+            frac *= min(1.0, rate(entry.street) * params.get("post_widen", 1.0))
+    return max(params.get("post_floor", 0.10), frac)
+
+
+def _opp_raised_preflop(obs):
+    return any(
+        not entry.is_me
+        and entry.street == Street.PREFLOP
+        and entry.action in (Action.RAISE_HALF, Action.RAISE_POT)
+        for entry in obs.action_history
     )
 
 
@@ -101,18 +147,21 @@ def decide(obs, memory, params=None):
 
         return check_or_fold(obs)
 
-    # Postflop, estimate showdown equity against legal opponent hands.
-    # The current engine accepts the range threshold but does not yet apply it.
+    # Postflop, estimate showdown equity against the opponent's likely range:
+    # a preflop-strength floor (raises this hand, inferred raising range) and,
+    # after postflop bets, only the top share of hands by current strength.
     opp_min_pct = min(
         params["range_cap"],
         params["range_step"] * opponent_raises(obs, memory),
     )
+    if params.get("pf_range_post") and _opp_raised_preflop(obs):
+        opp_min_pct = max(opp_min_pct, raiser_min_pct(memory, params))
     tb = memory.get("tb")
     deadline = tb.deadline(obs.hand_index) if tb is not None else time.perf_counter() + 0.001
 
-    # Positional arguments work with Diego's current camelCase and planned
-    # snake_case parameter spellings; both have the same argument order.
-    eq = equity(obs.hole_cards, obs.board, 300, deadline, opp_min_pct, seed)
+    # Contract: equity(hole, board, trials, deadline, oppMinPct, seed, oppTopFrac=...).
+    eq = equity(obs.hole_cards, obs.board, 300, deadline, opp_min_pct, seed,
+                oppTopFrac=post_top_frac(obs, memory, params))
 
     # Strong hands: bet/raise for value. All raises are checked for legality.
     if eq >= params["raise_pot_eq"] and rng.random() >= params["trap_freq"]:
